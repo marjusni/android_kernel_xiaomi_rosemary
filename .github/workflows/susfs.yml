@@ -162,7 +162,7 @@
 on:
   workflow_dispatch: {}
   push:
-    branches: [ main, master ]
+    branches: [ rosemary-13 ]
 
 jobs:
   build:
@@ -185,6 +185,57 @@ jobs:
         run: |
           git clone --depth=1 -b rosemary-13 \
             https://github.com/dlagia/android_kernel_xiaomi_rosemary.git kernel
+
+      - name: Terapkan SUSFS - patch inti (sebelum ReSukiSU hooks)
+        working-directory: kernel
+        run: |
+          set -e
+
+          echo "======================================"
+          echo "KERNEL COMMIT YANG DICOBA"
+          echo "======================================"
+          git rev-parse HEAD
+          git log -1 --oneline
+
+          PATCH=""
+          for candidate in \
+            "$GITHUB_WORKSPACE/Patches/Patch/susfs_patch_to_4.14.patch" \
+            "$GITHUB_WORKSPACE/Patches/susfs_patch_to_4_14.patch"; do
+            if [ -f "$candidate" ]; then
+              PATCH="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$PATCH" ]; then
+            echo "ERROR: susfs_patch_to_4.14.patch tidak ditemukan."
+            echo "Dicari di:"
+            echo "  Patches/Patch/susfs_patch_to_4.14.patch"
+            echo "  Patches/susfs_patch_to_4.14.patch"
+            exit 1
+          fi
+
+          echo "Patch: $PATCH"
+          ls -lh "$PATCH"
+
+          echo "== git apply --check (terhadap source rosemary-13 bersih) =="
+          git apply --check --whitespace=nowarn "$PATCH"
+
+          echo "== Terapkan patch SUSFS =="
+          git apply --whitespace=nowarn "$PATCH"
+
+          echo "== Verifikasi file inti SUSFS =="
+          for f in fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h; do
+            test -f "$f" || { echo "ERROR: $f tidak dibuat oleh patch"; exit 1; }
+            echo "OK: $f ada"
+          done
+
+          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile || {
+            echo "ERROR: fs/Makefile tidak berisi entry build susfs.o"
+            exit 1
+          }
+
+          echo "SUSFS CORE PATCH: PASS"
 
       - name: Integrasikan ReSukiSU (setup.sh resmi, branch main)
         working-directory: kernel
@@ -387,59 +438,15 @@ jobs:
             echo "OK: $sym -> $f"
           done
 
-      - name: Terapkan SUSFS - patch inti kernel (susfs_patch_to_4_14.patch)
-        working-directory: kernel
-        run: |
-          PATCH="$GITHUB_WORKSPACE/Patches/susfs_patch_to_4_14.patch"
-          test -f "$PATCH" || {
-            echo "ERROR: $PATCH tidak ditemukan."
-            echo "Taruh file susfs_patch_to_4_14.patch (hasil generate lokal"
-            echo "pengguna terhadap SATU commit dlagia/android_kernel_xiaomi_"
-            echo "rosemary@rosemary-13 yang SAMA dengan step 'Clone source"
-            echo "kernel' di atas) di path Patches/susfs_patch_to_4_14.patch"
-            echo "pada repo yang meng-host workflow ini, mengikuti struktur"
-            echo "folder resmi JackA1ltman/NonGKI_Kernel_Build_2nd."
-            exit 1
-          }
-
-          echo "== Dry-run (git apply --check) =="
-          if ! git apply --check --whitespace=nowarn "$PATCH" 2>/tmp/susfs-core-check.log; then
-            echo "ERROR: susfs_patch_to_4_14.patch GAGAL apply (hunk reject)."
-            echo "Kemungkinan besar: patch ini di-generate terhadap commit"
-            echo "rosemary-13 yang BEDA dengan commit yang ter-clone hari ini"
-            echo "(tidak seperti hook ReSukiSU di atas yang menempel ke"
-            echo "signature fungsi resmi KernelSU/SUSFS, patch SUSFS ini"
-            echo "menempel ke baris kode PERSIS milik kernel rosemary - kalau"
-            echo "source upstream rosemary-13 berubah walau 1 baris di salah"
-            echo "satu dari 18 file yang disentuh, hunk-nya bisa reject dan"
-            echo "patch ini WAJIB di-generate ulang oleh pengguna, bukan"
-            echo "ditambal manual di CI)."
-            echo "== Isi log git apply --check =="
-            cat /tmp/susfs-core-check.log
-            exit 1
-          fi
-
-          git apply --whitespace=nowarn "$PATCH"
-          echo "susfs_patch_to_4_14.patch: APPLIED OK"
-
-          echo ""
-          echo "== Verifikasi file inti SUSFS tertanam =="
-          for f in fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h; do
-            test -f "$f" || { echo "ERROR: $f tidak dibuat oleh patch"; exit 1; }
-            echo "OK: $f ada"
-          done
-          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile || {
-            echo "ERROR: fs/Makefile tidak berisi entry build susfs.o"
-            exit 1
-          }
-          echo "OK: fs/Makefile sudah punya entry susfs.o"
-
       - name: Terapkan SUSFS - inline hook script resmi (susfs_inline_hook_patches.sh)
         working-directory: kernel
         run: |
           SCRIPT="$GITHUB_WORKSPACE/Patches/susfs_inline_hook_patches.sh"
           test -f "$SCRIPT" || {
             echo "ERROR: $SCRIPT tidak ditemukan."
+            echo "Pastikan file ada di Patches/susfs_inline_hook_patches.sh"
+            echo "(sesuai struktur repo SUSFS resmi)."
+            echo ""
             echo "Taruh file susfs_inline_hook_patches.sh (skrip resmi dari"
             echo "JackA1ltman/NonGKI_Kernel_Build_2nd - penulis asli patch:"
             echo "simonpunk @ GitLab & backslashxx @ GitHub) di path"
