@@ -162,7 +162,7 @@
 on:
   workflow_dispatch: {}
   push:
-    branches: [ rosemary-13 ]
+    branches: [ main, master ]
 
 jobs:
   build:
@@ -184,61 +184,10 @@ jobs:
       - name: Clone source kernel (dlagia/android_kernel_xiaomi_rosemary @ rosemary-13)
         run: |
           git clone --depth=1 -b rosemary-13 \
-            https://github.com/dlagia/android_kernel_xiaomi_rosemary.git kernel
-
-      - name: Terapkan SUSFS - patch inti (sebelum ReSukiSU hooks)
-        working-directory: kernel
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "KERNEL COMMIT YANG DICOBA"
-          echo "======================================"
-          git rev-parse HEAD
-          git log -1 --oneline
-
-          PATCH=""
-          for candidate in \
-            "$GITHUB_WORKSPACE/Patches/Patch/susfs_patch_to_4.14.patch" \
-            "$GITHUB_WORKSPACE/Patches/susfs_patch_to_4_14.patch"; do
-            if [ -f "$candidate" ]; then
-              PATCH="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$PATCH" ]; then
-            echo "ERROR: susfs_patch_to_4.14.patch tidak ditemukan."
-            echo "Dicari di:"
-            echo "  Patches/Patch/susfs_patch_to_4.14.patch"
-            echo "  Patches/susfs_patch_to_4.14.patch"
-            exit 1
-          fi
-
-          echo "Patch: $PATCH"
-          ls -lh "$PATCH"
-
-          echo "== git apply --check (terhadap source rosemary-13 bersih) =="
-          git apply --check --whitespace=nowarn "$PATCH"
-
-          echo "== Terapkan patch SUSFS =="
-          git apply --whitespace=nowarn "$PATCH"
-
-          echo "== Verifikasi file inti SUSFS =="
-          for f in fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h; do
-            test -f "$f" || { echo "ERROR: $f tidak dibuat oleh patch"; exit 1; }
-            echo "OK: $f ada"
-          done
-
-          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile || {
-            echo "ERROR: fs/Makefile tidak berisi entry build susfs.o"
-            exit 1
-          }
-
-          echo "SUSFS CORE PATCH: PASS"
+            https://github.com/dlagia/android_kernel_xiaomi_rosemary.git kernel-src
 
       - name: Integrasikan ReSukiSU (setup.sh resmi, branch main)
-        working-directory: kernel
+        working-directory: kernel-src
         run: |
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
@@ -274,7 +223,7 @@ jobs:
           ls -ld KernelSU drivers/kernelsu
 
       - name: Pasang hook manual ReSukiSU (kernel 4.14, non-GKI)
-        working-directory: kernel
+        working-directory: kernel-src
         run: |
           python3 - << 'PYEOF'
           import sys
@@ -438,15 +387,59 @@ jobs:
             echo "OK: $sym -> $f"
           done
 
+      - name: Terapkan SUSFS - patch inti kernel (susfs_patch_to_4_14.patch)
+        working-directory: kernel-src
+        run: |
+          PATCH="$GITHUB_WORKSPACE/Patches/susfs_patch_to_4_14.patch"
+          test -f "$PATCH" || {
+            echo "ERROR: $PATCH tidak ditemukan."
+            echo "Taruh file susfs_patch_to_4_14.patch (hasil generate lokal"
+            echo "pengguna terhadap SATU commit dlagia/android_kernel_xiaomi_"
+            echo "rosemary@rosemary-13 yang SAMA dengan step 'Clone source"
+            echo "kernel' di atas) di path Patches/susfs_patch_to_4_14.patch"
+            echo "pada repo yang meng-host workflow ini, mengikuti struktur"
+            echo "folder resmi JackA1ltman/NonGKI_Kernel_Build_2nd."
+            exit 1
+          }
+
+          echo "== Dry-run (git apply --check) =="
+          if ! git apply --check --whitespace=nowarn "$PATCH" 2>/tmp/susfs-core-check.log; then
+            echo "ERROR: susfs_patch_to_4_14.patch GAGAL apply (hunk reject)."
+            echo "Kemungkinan besar: patch ini di-generate terhadap commit"
+            echo "rosemary-13 yang BEDA dengan commit yang ter-clone hari ini"
+            echo "(tidak seperti hook ReSukiSU di atas yang menempel ke"
+            echo "signature fungsi resmi KernelSU/SUSFS, patch SUSFS ini"
+            echo "menempel ke baris kode PERSIS milik kernel rosemary - kalau"
+            echo "source upstream rosemary-13 berubah walau 1 baris di salah"
+            echo "satu dari 18 file yang disentuh, hunk-nya bisa reject dan"
+            echo "patch ini WAJIB di-generate ulang oleh pengguna, bukan"
+            echo "ditambal manual di CI)."
+            echo "== Isi log git apply --check =="
+            cat /tmp/susfs-core-check.log
+            exit 1
+          fi
+
+          git apply --whitespace=nowarn "$PATCH"
+          echo "susfs_patch_to_4_14.patch: APPLIED OK"
+
+          echo ""
+          echo "== Verifikasi file inti SUSFS tertanam =="
+          for f in fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h; do
+            test -f "$f" || { echo "ERROR: $f tidak dibuat oleh patch"; exit 1; }
+            echo "OK: $f ada"
+          done
+          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile || {
+            echo "ERROR: fs/Makefile tidak berisi entry build susfs.o"
+            exit 1
+          }
+          echo "OK: fs/Makefile sudah punya entry susfs.o"
+
       - name: Terapkan SUSFS - inline hook script resmi (susfs_inline_hook_patches.sh)
-        working-directory: kernel
+        working-directory: kernel-src
         run: |
           SCRIPT="$GITHUB_WORKSPACE/Patches/susfs_inline_hook_patches.sh"
           test -f "$SCRIPT" || {
             echo "ERROR: $SCRIPT tidak ditemukan."
-            echo "Pastikan file ada di Patches/susfs_inline_hook_patches.sh"
-            echo "(sesuai struktur repo SUSFS resmi)."
-            echo ""
             echo "Taruh file susfs_inline_hook_patches.sh (skrip resmi dari"
             echo "JackA1ltman/NonGKI_Kernel_Build_2nd - penulis asli patch:"
             echo "simonpunk @ GitLab & backslashxx @ GitHub) di path"
@@ -498,7 +491,7 @@ jobs:
           rm -f ./susfs_inline_hook_patches.sh
 
       - name: Commit ReSukiSU + bersihkan dirty
-        working-directory: kernel
+        working-directory: kernel-src
         run: |
           echo "==================== Cek status KernelSU sebelum commit ===================="
           cd KernelSU
@@ -534,7 +527,7 @@ jobs:
           fi
 
       - name: Pra-compile - perbaikan build source MTK (verified reusable)
-        working-directory: kernel
+        working-directory: kernel-src
         run: |
           grep -rlZ --include=Makefile --include=Kbuild --include='*.mk' -e '-Werror' . 2>/dev/null \
             | xargs -0 -r sed -i -E -e 's/-Werror=[A-Za-z0-9_-]+//g' -e 's/(-Werror)([[:space:]]|$)/\2/g' || true
@@ -556,7 +549,7 @@ jobs:
           echo -n 'no_sanitize( tersisa: '; grep -rl 'no_sanitize(' --include='*.h' --include='*.c' . 2>/dev/null | wc -l
 
       - name: Aktifkan KSU + SUSFS di defconfig
-        working-directory: kernel
+        working-directory: kernel-src
         run: |
           DEF=arch/arm64/configs/rosemary_defconfig
           {
@@ -620,7 +613,7 @@ jobs:
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang-proton
 
       - name: Compile kernel
-        working-directory: kernel
+        working-directory: kernel-src
         run: |
           export PATH="$GITHUB_WORKSPACE/clang-proton/bin:$PATH"
           export ARCH=arm64
@@ -713,7 +706,7 @@ jobs:
           # upload GitHub sendiri. Solusinya: copy .config ke nama file
           # TANPA titik di depan supaya pasti ikut ter-upload, lalu
           # referensikan nama BARU itu di step "Upload paket" di bawah
-          # (bukan lagi kernel/out/.config langsung).
+          # (bukan lagi kernel-src/out/.config langsung).
           cp out/.config out/resolved-config.txt
           echo "OK: out/.config disalin ke out/resolved-config.txt (nama tanpa titik-di-depan) supaya lolos filter hidden-file upload-artifact"
           echo ""
@@ -725,7 +718,7 @@ jobs:
         run: |
           FOUND=""
           for f in Image.gz-dtb Image.gz Image; do
-            p="kernel/out/arch/arm64/boot/$f"
+            p="kernel-src/out/arch/arm64/boot/$f"
             if [ -f "$p" ]; then
               echo "path=$p" >> "$GITHUB_OUTPUT"
               echo "name=$f" >> "$GITHUB_OUTPUT"
@@ -734,7 +727,7 @@ jobs:
             fi
           done
           [ -n "$FOUND" ] || { echo "Kernel image tidak ditemukan"; exit 1; }
-          DTBO="kernel/out/arch/arm64/boot/dtbo.img"
+          DTBO="kernel-src/out/arch/arm64/boot/dtbo.img"
           if [ -f "$DTBO" ]; then
             echo "dtbo=$DTBO" >> "$GITHUB_OUTPUT"
             echo "dtbo.img ditemukan: $DTBO"
@@ -764,4 +757,4 @@ jobs:
             ${{ env.ZIP }}
             ${{ steps.kimg.outputs.path }}
             ${{ steps.kimg.outputs.dtbo }}
-            kernel/out/resolved-config.txt
+            kernel-src/out/resolved-config.txt
